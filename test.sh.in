@@ -99,7 +99,7 @@ preparePackages() {
       for i in ${REPOS[@]}; do
          cd ${WORKSPACE}/build-deps
          if [[ "${REPO_NAME}" != *"${i}"* ]]; then
-             git clone https://github.com/RackHD/${i}.git
+             git clone https://github.com/keedya/${i}.git
              cd ${i}
              git checkout ${GIT_REFSPEC}
              npm install --production
