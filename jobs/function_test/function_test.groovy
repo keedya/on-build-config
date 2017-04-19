@@ -4,105 +4,107 @@ def function_test(String test_name, String label_name, String TEST_GROUP, Boolea
         def node_name = ""
         node_name = shareMethod.occupyAvailableLockedResource(label_name, used_resources)
         node(node_name){
-            deleteDir()
-            dir("on-build-config"){
-                checkout scm
-            }
-            // Get the manifest file
-            if("${stash_manifest_name}" != null && "${stash_manifest_name}" != "null"){
-                unstash "${stash_manifest_name}"
-            }
-            if("${stash_manifest_path}" != null && "${stash_manifest_path}" != "null"){
-                env.MANIFEST_FILE="$stash_manifest_path"
-            }
-            else if("${MANIFEST_FILE_URL}" != null && "${MANIFEST_FILE_URL}" != "null"){
-                sh 'curl $MANIFEST_FILE_URL -o manifest'
-                env.MANIFEST_FILE = "manifest"
-            }
-            else{
-                error("Please provide the manifest url or a stashed manifest")
-            }
-         
-            // If the manifest file contains PR of on-http and RackHD, 
-            // set the environment variable MODIFY_API_PACKAGE as true
-            // The test.sh script will install api package according to API_PACKAGE_LIST
-            sh '''#!/bin/bash
-            ./on-build-config/build-release-tools/HWIMO-BUILD ./on-build-config/build-release-tools/application/parse_manifest.py \
-            --manifest-file $MANIFEST_FILE \
-            --parameters-file downstream_file
-            '''
+            stage('Running ' + test_name + ' on ' +node_name){
+                deleteDir()
+                dir("on-build-config"){
+                    checkout scm
+                }
+                // Get the manifest file
+                if("${stash_manifest_name}" != null && "${stash_manifest_name}" != "null"){
+                    unstash "${stash_manifest_name}"
+                }
+                if("${stash_manifest_path}" != null && "${stash_manifest_path}" != "null"){
+                    env.MANIFEST_FILE="$stash_manifest_path"
+                }
+                else if("${MANIFEST_FILE_URL}" != null && "${MANIFEST_FILE_URL}" != "null"){
+                    sh 'curl $MANIFEST_FILE_URL -o manifest'
+                    env.MANIFEST_FILE = "manifest"
+                }
+                else{
+                    error("Please provide the manifest url or a stashed manifest")
+                }
+            
+                // If the manifest file contains PR of on-http and RackHD, 
+                // set the environment variable MODIFY_API_PACKAGE as true
+                // The test.sh script will install api package according to API_PACKAGE_LIST
+                sh '''#!/bin/bash
+                ./on-build-config/build-release-tools/HWIMO-BUILD ./on-build-config/build-release-tools/application/parse_manifest.py \
+                --manifest-file $MANIFEST_FILE \
+                --parameters-file downstream_file
+                '''
 
-            env.MODIFY_API_PACKAGE = false
-            if(fileExists ('downstream_file')) {
-                def props = readProperties file: 'downstream_file'
-                if(props['REPOS_UNDER_TEST']) {
-                    env.REPOS_UNDER_TEST = "${props.REPOS_UNDER_TEST}"
-                    def repos = env.REPOS_UNDER_TEST.tokenize(',')
-                    if(repos.contains("on-http") && repos.contains("RackHD")){
-                        env.MODIFY_API_PACKAGE = true
+                env.MODIFY_API_PACKAGE = false
+                if(fileExists ('downstream_file')) {
+                    def props = readProperties file: 'downstream_file'
+                    if(props['REPOS_UNDER_TEST']) {
+                        env.REPOS_UNDER_TEST = "${props.REPOS_UNDER_TEST}"
+                        def repos = env.REPOS_UNDER_TEST.tokenize(',')
+                        if(repos.contains("on-http") && repos.contains("RackHD")){
+                            env.MODIFY_API_PACKAGE = true
+                        }
                     }
                 }
-            }
 
-            timestamps{
-                withEnv([
-                    "TEST_GROUP=$TEST_GROUP",
-                    "RUN_CIT_TEST=$RUN_CIT_TEST",
-                    "RUN_FIT_TEST=$RUN_FIT_TEST",
-                    "SKIP_PREP_DEP=false",
-                    "MANIFEST_FILE=${env.MANIFEST_FILE}",
-                    "NODE_NAME=${env.NODE_NAME}",
-                    "PYTHON_REPOS=ucs-service"]
-                ){
-                    try{
-                        timeout(60){
-                            sh '''
-                            ./on-build-config/jobs/function_test/prepare.sh 
-                            ./build-config/test.sh
+                timestamps{
+                    withEnv([
+                        "TEST_GROUP=$TEST_GROUP",
+                        "RUN_CIT_TEST=$RUN_CIT_TEST",
+                        "RUN_FIT_TEST=$RUN_FIT_TEST",
+                        "SKIP_PREP_DEP=false",
+                        "MANIFEST_FILE=${env.MANIFEST_FILE}",
+                        "NODE_NAME=${env.NODE_NAME}",
+                        "PYTHON_REPOS=ucs-service"]
+                    ){
+                        try{
+                            timeout(60){
+                                sh '''
+                                ./on-build-config/jobs/function_test/prepare.sh 
+                                ./build-config/test.sh
+                                '''
+                            }
+                        } catch(error){
+                            throw error
+                        } finally{
+                            def artifact_dir = test_name.replaceAll(' ', '-') + "[$node_name]"
+                            sh '''#!/bin/bash -x
+                            mkdir '''+"$artifact_dir"+'''
+                            ./build-config/post-deploy.sh
+                            files=$( ls build-deps/*.log )
+                            if [ ! -z "$files" ];then
+                                cp build-deps/*.log '''+"$artifact_dir"+'''
+                            fi
+                            files=$( ls RackHD/test/*.xml )
+                            if [ ! -z "$files" ];then
+                                cp RackHD/test/*.xml '''+"$artifact_dir" +'''
+                            fi
                             '''
-                        }
-                    } catch(error){
-                        throw error
-                    } finally{
-                        def artifact_dir = test_name.replaceAll(' ', '-') + "[$node_name]"
-                        sh '''#!/bin/bash -x
-                        mkdir '''+"$artifact_dir"+'''
-                        ./build-config/post-deploy.sh
-                        files=$( ls build-deps/*.log )
-                        if [ ! -z "$files" ];then
-                            cp build-deps/*.log '''+"$artifact_dir"+'''
-                        fi
-                        files=$( ls RackHD/test/*.xml )
-                        if [ ! -z "$files" ];then
-                            cp RackHD/test/*.xml '''+"$artifact_dir" +'''
-                        fi
-                        '''
-                        archiveArtifacts "$artifact_dir/*.*"
+                            archiveArtifacts "$artifact_dir/*.*"
 
-                        sh '''#!/bin/bash -x
-                        ./build-config/jobs/function_test/cleanup.sh
-                        find RackHD/test/ -maxdepth 1 -name "*.xml" > files.txt
-                        files=$( paste -s -d ' ' files.txt )
-                        if [ -z "$files" ];then
-                            echo "No test result files generated, maybe it's aborted"
-                            exit 1
-                        else
-                            ./build-config/build-release-tools/application/parse_test_results.py \
-                            --test-result-file "$files"  \
-                            --parameters-file downstream_file
-                        fi
-                        '''
+                            sh '''#!/bin/bash -x
+                            ./build-config/jobs/function_test/cleanup.sh
+                            find RackHD/test/ -maxdepth 1 -name "*.xml" > files.txt
+                            files=$( paste -s -d ' ' files.txt )
+                            if [ -z "$files" ];then
+                                echo "No test result files generated, maybe it's aborted"
+                                exit 1
+                            else
+                                ./build-config/build-release-tools/application/parse_test_results.py \
+                                --test-result-file "$files"  \
+                                --parameters-file downstream_file
+                            fi
+                            '''
 
-                        junit 'RackHD/test/*.xml'
-                        int failure_count = 0
-                        int error_count = 0
-                        if(fileExists ("downstream_file")) {
-                            def props = readProperties file: "downstream_file"
-                            failure_count = "${props.failures}".toInteger()
-                            error_count = "${props.errors}".toInteger()
-                        }
-                        if (failure_count > 0 || error_count > 0){
-                            error("there are failed test cases")
+                            junit 'RackHD/test/*.xml'
+                            int failure_count = 0
+                            int error_count = 0
+                            if(fileExists ("downstream_file")) {
+                                def props = readProperties file: "downstream_file"
+                                failure_count = "${props.failures}".toInteger()
+                                error_count = "${props.errors}".toInteger()
+                            }
+                            if (failure_count > 0 || error_count > 0){
+                                error("there are failed test cases")
+                            }
                         }
                     }
                 }
